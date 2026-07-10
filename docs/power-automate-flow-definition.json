@@ -1,0 +1,131 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Modèle de flux Power Automate - Export hebdomadaire Lignes de commande vente en cours (D365 F&O vers CSV). Importer dans Power Automate comme base, puis configurer les connexions et paramètres d'environnement.",
+    "documentation": "docs/export-hebdomadaire-lignes-commande-vente-en-cours.md"
+  },
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "D365FO_InstanceUrl": {
+      "defaultValue": "https://votre-env.operations.dynamics.com",
+      "type": "String",
+      "metadata": {
+        "description": "URL de l'instance D365 Finance & Operations"
+      }
+    },
+    "LegalEntity": {
+      "defaultValue": "FRA1",
+      "type": "String",
+      "metadata": {
+        "description": "Code société légale (dataAreaId)"
+      }
+    },
+    "ExportFolderPath": {
+      "defaultValue": "/Exports/D365FO",
+      "type": "String",
+      "metadata": {
+        "description": "Dossier OneDrive de destination"
+      }
+    },
+    "NotificationEmail": {
+      "defaultValue": "utilisateur@entreprise.com",
+      "type": "String",
+      "metadata": {
+        "description": "Adresse e-mail de l'utilisateur destinataire"
+      }
+    }
+  },
+  "triggers": {
+    "Recurrence_Weekly": {
+      "recurrence": {
+        "frequency": "Week",
+        "interval": 1,
+        "schedule": {
+          "weekDays": ["Monday"],
+          "hours": ["7"],
+          "minutes": [0]
+        },
+        "timeZone": "Romance Standard Time"
+      },
+      "type": "Recurrence"
+    }
+  },
+  "actions": {
+    "List_Open_Sales_Order_Lines": {
+      "runAfter": {},
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['finopsapps']['connectionId']"
+          }
+        },
+        "method": "get",
+        "path": "/api/data/v9.2/@{encodeURIComponent('SalesOrderLines')}",
+        "queries": {
+          "$filter": "dataAreaId eq '@{parameters('LegalEntity')}' and SalesStatus eq Microsoft.Dynamics.DataEntities.SalesStatus'Backorder' and OrderedSalesQuantity gt 0",
+          "$select": "SalesOrderNumber,ItemNumber,OrderedSalesQuantity,SalesPrice,LineAmount,RequestedShippingDate,CustomerAccount,SalesUnitSymbol,InventoryLotId",
+          "$orderby": "SalesOrderNumber asc"
+        }
+      },
+      "metadata": {
+        "note": "Remplacer par l'action 'List records' du connecteur Fin & Ops Apps dans l'interface Power Automate. Le chemin exact varie selon la version du connecteur."
+      }
+    },
+    "Create_CSV_Table": {
+      "runAfter": {
+        "List_Open_Sales_Order_Lines": ["Succeeded"]
+      },
+      "type": "Table",
+      "inputs": {
+        "from": "@body('List_Open_Sales_Order_Lines')?['value']",
+        "format": "CSV"
+      }
+    },
+    "Create_CSV_File_OneDrive": {
+      "runAfter": {
+        "Create_CSV_Table": ["Succeeded"]
+      },
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/default/files",
+        "queries": {
+          "folderPath": "@parameters('ExportFolderPath')",
+          "name": "Lignes_commande_vente_en_cours_@{formatDateTime(utcNow(), 'yyyy-MM-dd')}.csv"
+        },
+        "body": "@body('Create_CSV_Table')"
+      }
+    },
+    "Send_Success_Notification": {
+      "runAfter": {
+        "Create_CSV_File_OneDrive": ["Succeeded"]
+      },
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['office365']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/v2/Mail",
+        "body": {
+          "To": "@parameters('NotificationEmail')",
+          "Subject": "Export hebdomadaire - Lignes commande vente en cours - @{formatDateTime(utcNow(), 'dd/MM/yyyy')}",
+          "Body": "<p>Bonjour,</p><p>L'export hebdomadaire des <strong>lignes de commande vente en cours</strong> a été généré avec succès.</p><p>Fichier : Lignes_commande_vente_en_cours_@{formatDateTime(utcNow(), 'yyyy-MM-dd')}.csv</p><p>Cordialement,<br/>Power Automate</p>",
+          "Importance": "Normal"
+        }
+      }
+    }
+  }
+}
